@@ -1,0 +1,13 @@
+#!/bin/sh
+
+echo "  bz2    rz    gz"
+
+for f in $*; do
+    s1=`filesize $f`
+    s2=`filesize $f.bz2`
+    s3=`filesize $f.rz`
+    s4=`filesize $f.gz`
+
+    echo $s1" "$s2" "$s3" "$s4" "$f | awk '{printf "%5.2f %5.2f %5.2f  %s\n", 
+                                       $2/$2, $2/$3, $2/$4, $5}'
+done

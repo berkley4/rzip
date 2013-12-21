@@ -1,0 +1,52 @@
+# Makefile for rzip. This is processed by configure to produce the final
+# Makefile
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+INSTALL_BIN=$(exec_prefix)/bin
+INSTALL_MAN=$(prefix)/man
+
+LIBS=@LIBS@
+CC=@CC@
+CFLAGS=@CFLAGS@
+
+INSTALLCMD=@INSTALL@
+
+VPATH=@srcdir@
+srcdir=@srcdir@
+SHELL=/bin/sh
+
+
+.SUFFIXES:
+.SUFFIXES: .c .o
+
+OBJS= rzip.o runzip.o main.o stream.o util.o crc32.o
+
+# note that the -I. is needed to handle config.h when using VPATH
+.c.o:
+	$(CC) -I. -I$(srcdir) $(CFLAGS) -c $< -o $@
+
+all: rzip
+
+man: rzip.1 
+
+install: all
+	-mkdir -p ${INSTALL_BIN}
+	${INSTALLCMD} -m 755 rzip ${INSTALL_BIN}
+	-mkdir -p ${INSTALL_MAN}/man1
+	${INSTALLCMD} -m 644 $(srcdir)/rzip.1 ${INSTALL_MAN}/man1/
+
+rzip: $(OBJS)
+	$(CC) $(CFLAGS) -o rzip $(OBJS) $(LIBS)
+
+rzip.1: rzip.yo
+	yodl2man -o rzip.1 rzip.yo
+
+web/rzip-man.html: rzip.yo
+	mkdir -p man
+	yodl2html -o web/rzip-man.html rzip.yo
+
+docs: rzip.1 web/rzip-man.html
+
+clean:
+	rm -f *~ $(OBJS) rzip config.cache config.log config.status

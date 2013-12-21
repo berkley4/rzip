@@ -1,0 +1,5 @@
+#!/bin/sh
+
+for f in $*; do
+  gzip -9 < $f > $f.gz
+done

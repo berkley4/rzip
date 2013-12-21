@@ -1,0 +1,5 @@
+#!/bin/sh
+
+for f in $*; do
+  bzip2 < $f > $f.bz2
+done

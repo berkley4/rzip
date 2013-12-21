@@ -1,0 +1,5 @@
+#!/bin/sh
+
+for f in $*; do
+  $HOME/rzip/rzip $f $f.rz
+done
