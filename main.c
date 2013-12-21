@@ -444,10 +444,6 @@ static void compress_file(struct rzip_control *control)
 		fatal("Cannot specify -q with input files\n");
 	}
 
-	if (!(control.flags & FLAG_DECOMPRESS) && control.out_tmp && control.in_tmp) {
-		fprintf(stderr,"WARNING: file produced is not usable with plain rzip\n");
-	}
-
 	if (control.in_tmp)
 		argc=1;
 
