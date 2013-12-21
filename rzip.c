@@ -108,6 +108,27 @@ static inline void put_uint32(void *ss, int stream, unsigned s)
 	put_u8(ss, stream, (s>>24) & 0xFF);
 }
 
+static int tmp_in_chunk(int fd_in,int chunk)
+{
+	ssize_t r,w;
+	size_t l=0;
+	static char buf[64*1024];
+
+	while(chunk-l>0 && (r=read(STDIN_FILENO,buf,MIN(sizeof(buf),chunk-l)))>0) {
+		l+=r;
+		w=write(fd_in,buf,r);
+		if(w<0) 
+			fatal("cannot write to temporary file: %s\n",strerror(errno));
+		if(w!=r) 
+			fatal("partial write?!\n");
+	}
+	if(r<0) {
+		fatal("cannot read from stdin: %s\n",strerror(errno));
+	}
+	if(lseek(fd_in,0,SEEK_SET)==-1)
+		fatal("failed to seek");
+	return l;
+}
 
 static void put_header(void *ss, uchar head, int len)
 {
@@ -528,7 +549,7 @@ static void init_hash_indexes(struct rzip_state *st)
 /* compress a chunk of an open file. Assumes that the file is able to
    be mmap'd and is seekable */
 static void rzip_chunk(struct rzip_state *st, int fd_in, int fd_out, off_t offset, 
-		       double pct_base, double pct_multiple)
+		       double pct_base, double pct_multiple, int outpiped)
 {
 	uchar *buf;
 
@@ -537,7 +558,7 @@ static void rzip_chunk(struct rzip_state *st, int fd_in, int fd_out, off_t offse
 		fatal("Failed to map buffer in rzip_fd\n");
 	}
 
-	st->ss = open_stream_out(fd_out, NUM_STREAMS, st->level->bzip_level);
+	st->ss = open_stream_out(fd_out, NUM_STREAMS, st->level->bzip_level, outpiped);
 	if (!st->ss) {
 		fatal("Failed to open streams in rzip_fd\n");
 	}
@@ -550,11 +571,13 @@ static void rzip_chunk(struct rzip_state *st, int fd_in, int fd_out, off_t offse
 
 
 /* compress a whole file chunks at a time */
-void rzip_fd(struct rzip_control *control, int fd_in, int fd_out)
+off_t rzip_fd(struct rzip_control *control, int fd_in, int fd_out)
 {
 	struct stat s, s2;
-	off_t len;
+	int progress= control->flags & FLAG_SHOW_PROGRESS;
+	off_t len, total_len=0;
 	struct rzip_state *st;
+	int outpiped=control->out_tmp?1:0;
 
 	st = calloc(sizeof(*st), 1);
 	if (!st) {
@@ -568,10 +591,19 @@ void rzip_fd(struct rzip_control *control, int fd_in, int fd_out)
 
 	init_hash_indexes(st);
 
-	if (fstat(fd_in, &s)) {
-		fatal("Failed to stat fd_in in rzip_fd - %s\n", strerror(errno));
+	if(!control->in_tmp) {
+		if (fstat(fd_in, &s)) {
+			fatal("Failed to stat fd_in in rzip_fd - %s\n", strerror(errno));
+		}
+		len = s.st_size;
+	} else {
+		len = 1;
+		control->flags &= ~FLAG_SHOW_PROGRESS;
 	}
-	len = s.st_size;
+
+	if(!control->out_tmp) {
+		control->flags &= ~FLAG_SHOW_PROGRESS;
+	}
 
 	while (len) {
 		int chunk;
@@ -582,19 +614,31 @@ void rzip_fd(struct rzip_control *control, int fd_in, int fd_out)
 		} else {
 			chunk = control->compression_level * CHUNK_MULTIPLE;
 		}
-		
-		if (chunk > len) chunk = len;
 
-		pct_base = (100.0 * (s.st_size - len)) / s.st_size;
-		pct_multiple = ((double)chunk) / s.st_size;
+		if(control->in_tmp) {
+			len=chunk;
+			chunk=tmp_in_chunk(fd_in,chunk);
+			if(chunk<len)
+				len=0;
 
-		st->chunk_size = chunk;
+			st->chunk_size = chunk;
 
-		rzip_chunk(st, fd_in, fd_out, s.st_size - len, pct_base, pct_multiple);
-		len -= chunk;
+			rzip_chunk(st, fd_in, fd_out, 0, pct_base, pct_multiple, outpiped);
+		} else {
+			if (chunk > len) chunk = len;
+
+			pct_base = (100.0 * (s.st_size - len)) / s.st_size;
+			pct_multiple = ((double)chunk) / s.st_size;
+
+			st->chunk_size = chunk;
+
+			rzip_chunk(st, fd_in, fd_out, s.st_size - len, pct_base, pct_multiple, outpiped);
+			len -= chunk;
+		}
+
+		total_len+=chunk;
 	}
 
-	fstat(fd_out, &s2);
 
 	if (st->control->verbosity > 1) {
 		printf("matches=%d match_bytes=%d\n", 
@@ -608,14 +652,20 @@ void rzip_fd(struct rzip_control *control, int fd_in, int fd_out)
 		       (1.0 + st->stats.match_bytes) / st->stats.literal_bytes);
 	}
 
-	if ((st->control->flags & FLAG_SHOW_PROGRESS) ||
-	    st->control->verbosity > 0) {
-		printf("%s - compression ratio %.3f\n", 
-		       st->control->infile, 1.0 * s.st_size / s2.st_size);
+	if(!control->out_tmp) {
+		fstat(fd_out, &s2);
+
+		if (progress ||
+		    st->control->verbosity > 0) {
+			printf("%s - compression ratio %.3f\n", 
+			       st->control->infile, 1.0 * total_len / s2.st_size);
+		}
 	}
 
 	if (st->hash_table) {
 		free(st->hash_table);
 	}
 	free(st);
+
+	return total_len;
 }

@@ -23,6 +23,7 @@ static void usage(void)
 {
 	printf("rzip %d.%d\n", RZIP_MAJOR_VERSION, RZIP_MINOR_VERSION);
 	printf("Copright (C) Andrew Tridgell 1998-2003\n\n");
+	printf("stdin/stdout patch by Nicolas Rachinsky\n\n");
 	printf("usage: rzip [options] <file...>\n");
 	printf(" Options:\n");
 	printf("     -0            fastest (worst) compression\n");
@@ -36,11 +37,17 @@ static void usage(void)
 	printf("     -P            show compression progress\n");
 	printf("     -L level      set compression level\n");
 	printf("     -V            show version\n");
+	printf("     -q file       temporary file for input\n");
+	printf("     -Q file       temporary file for output\n");
 #if 0
 	/* damn, this will be quite hard to do */
 	printf("     -t          test compressed file integrity\n");
 #endif
-	printf("\nnote that rzip cannot operate on stdin/stdout\n"); 
+	printf("\n"); 
+	printf("to read from stdin -q is necessary\n"); 
+	printf("to write to stdout -Q is necessary\n"); 
+	printf("reading from stdin and writing to stdout while compressing results in files\n"); 
+	printf("that cannot be decompressed with plain rzip\n"); 
 }
 
 
@@ -55,9 +62,12 @@ static void write_magic(int fd_in, int fd_out)
 	magic[4] = RZIP_MAJOR_VERSION;
 	magic[5] = RZIP_MINOR_VERSION;
 
-	if (fstat(fd_in, &st) != 0) {
+	if (fd_in && fstat(fd_in, &st) != 0) {
 		fatal("bad magic file descriptor!?\n");
+	} else if(!fd_in) {
+		st.st_size=0;
 	}
+	
 
 #if HAVE_LARGE_FILES
 	v = htonl(st.st_size & 0xFFFFFFFF);
@@ -68,6 +78,35 @@ static void write_magic(int fd_in, int fd_out)
 	v = htonl(st.st_size);
 	memcpy(&magic[6], &v, 4);
 #endif
+
+	if (write(fd_out, magic, sizeof(magic)) != sizeof(magic)) {
+		fatal("Failed to write magic header\n");
+	}
+}
+
+static void update_magic(off_t l, int fd_out)
+{
+	char magic[24];
+	uint32_t v;
+
+	memset(magic, 0, sizeof(magic));
+	strcpy(magic, "RZIP");
+	magic[4] = RZIP_MAJOR_VERSION;
+	magic[5] = RZIP_MINOR_VERSION;
+
+
+#if HAVE_LARGE_FILES
+	v = htonl(l & 0xFFFFFFFF);
+	memcpy(&magic[6], &v, 4);
+	v = htonl(l >> 32);
+	memcpy(&magic[10], &v, 4);
+#else
+	v = htonl(l
+	memcpy(&magic[6], &v, 4);
+#endif
+
+	if(lseek(fd_out,0,SEEK_SET)==-1)
+		fatal("Failed to seek\n");
 
 	if (write(fd_out, magic, sizeof(magic)) != sizeof(magic)) {
 		fatal("Failed to write magic header\n");
@@ -129,28 +168,41 @@ static void decompress_file(struct rzip_control *control)
 	int fd_in, fd_out = -1, fd_hist = -1;
 	off_t expected_size;
 
-	if (control->outname) {
-		control->outfile = strdup(control->outname);
+	if(control->out_tmp) {
+		control->outfile = strdup("-");
 	} else {
-		if (strlen(control->suffix) >= strlen(control->infile) ||
-		    strcmp(control->suffix, 
-			   control->infile + 
-			   strlen(control->infile) - strlen(control->suffix)) != 0) {
-			fatal("%s: unknown suffix\n", control->infile);
+		if (control->outname) {
+			control->outfile = strdup(control->outname);
+		} else {
+			if (strlen(control->suffix) >= strlen(control->infile) ||
+			    strcmp(control->suffix, 
+				   control->infile + 
+				   strlen(control->infile) - strlen(control->suffix)) != 0) {
+				fatal("%s: unknown suffix\n", control->infile);
+			}
+			
+			control->outfile = strdup(control->infile);
+			control->outfile[strlen(control->infile) - strlen(control->suffix)] = 0;
 		}
-		
-		control->outfile = strdup(control->infile);
-		control->outfile[strlen(control->infile) - strlen(control->suffix)] = 0;
 	}
 
-	fd_in = open(control->infile,O_RDONLY);
-	if (fd_in == -1) {
-		fatal("Failed to open %s: %s\n", 
-		      control->infile, 
-		      strerror(errno));
+	if(control->in_tmp) {
+		fd_in = open(control->in_tmp,O_RDWR|O_CREAT|O_EXCL,0600);
+		if (fd_in == -1) {
+			fatal("Failed to open %s: %s\n", 
+			      control->in_tmp, 
+			      strerror(errno));
+		}
+	} else {
+		fd_in = open(control->infile,O_RDONLY);
+		if (fd_in == -1) {
+			fatal("Failed to open %s: %s\n", 
+			      control->infile, 
+			      strerror(errno));
+		}
 	}
 
-	if ((control->flags & FLAG_TEST_ONLY) == 0) {
+	if ((control->flags & FLAG_TEST_ONLY) == 0 && ! control->out_tmp) {
 		if (control->flags & FLAG_FORCE_REPLACE) {
 			fd_out = open(control->outfile,O_WRONLY|O_CREAT|O_TRUNC,0666);
 		} else {
@@ -161,18 +213,32 @@ static void decompress_file(struct rzip_control *control)
 			      control->outfile, strerror(errno));
 		}
 
-		preserve_perms(control, fd_in, fd_out);
+		if(!control->in_tmp)
+			preserve_perms(control, fd_in, fd_out);
 		
 		fd_hist = open(control->outfile,O_RDONLY);
 		if (fd_hist == -1) {
 			fatal("Failed to open history file %s\n", 
 			      control->outfile);
 		}
+	} else if(control->out_tmp) {
+		fd_out = open(control->out_tmp,O_RDWR|O_CREAT|O_EXCL,0600);
+		if (fd_out == -1) {
+			fatal("Failed to create %s: %s\n", 
+			      control->out_tmp, strerror(errno));
+		}
+
+		fd_hist = open(control->out_tmp,O_RDONLY);
+		if (fd_hist == -1) {
+			fatal("Failed to open history file %s\n", 
+			      control->out_tmp);
+		}
 	}
 
+
 	
-	read_magic(fd_in, fd_out, &expected_size);
-	runzip_fd(fd_in, fd_out, fd_hist, expected_size);	
+	read_magic(control->in_tmp?STDIN_FILENO:fd_in, fd_out, &expected_size);
+	runzip_fd(fd_in, fd_out, fd_hist, expected_size,control->out_tmp?1:0,control->in_tmp?1:0);
 	
 	if ((control->flags & FLAG_TEST_ONLY) == 0) {
 		if (close(fd_hist) != 0 ||
@@ -183,7 +249,13 @@ static void decompress_file(struct rzip_control *control)
 
 	close(fd_in);
 
-	if ((control->flags & (FLAG_KEEP_FILES | FLAG_TEST_ONLY)) == 0) {
+
+	if(control->out_tmp)
+		unlink(control->out_tmp);
+
+	if(control->in_tmp)
+		unlink(control->in_tmp);
+	else if ((control->flags & (FLAG_KEEP_FILES | FLAG_TEST_ONLY)) == 0) {
 		if (unlink(control->infile) != 0) {
 			fatal("Failed to unlink %s: %s\n", 
 			      control->infile, strerror(errno));
@@ -199,6 +271,7 @@ static void decompress_file(struct rzip_control *control)
 static void compress_file(struct rzip_control *control)
 {
 	int fd_in, fd_out;
+	off_t l;
 
 	if (strlen(control->suffix) <= strlen(control->infile) &&
 	    strcmp(control->suffix, control->infile + strlen(control->infile) - strlen(control->suffix)) == 0) {
@@ -218,35 +291,66 @@ static void compress_file(struct rzip_control *control)
 		strcat(control->outfile, control->suffix);
 	}
 
-	fd_in = open(control->infile,O_RDONLY);
-	if (fd_in == -1) {
-		fatal("Failed to open %s: %s\n", control->infile, strerror(errno));
+	if(control->in_tmp) {
+		fd_in = open(control->in_tmp,O_RDWR|O_CREAT|O_EXCL,0600);
+		if (fd_in == -1) {
+			fatal("Failed to open %s: %s\n", control->in_tmp, strerror(errno));
+		}
+
+	} else {
+		fd_in = open(control->infile,O_RDONLY);
+		if (fd_in == -1) {
+			fatal("Failed to open %s: %s\n", control->infile, strerror(errno));
+		}
 	}
 	
-	if (control->flags & FLAG_FORCE_REPLACE) {
-		fd_out = open(control->outfile,O_WRONLY|O_CREAT|O_TRUNC,0666);
+	if(control->out_tmp) {
+		fd_out = open(control->out_tmp,O_RDWR|O_CREAT|O_EXCL,0600);
+		if (fd_out == -1) {
+			fatal("Failed to open %s: %s\n", control->out_tmp, strerror(errno));
+		}
 	} else {
-		fd_out = open(control->outfile,O_WRONLY|O_CREAT|O_EXCL,0666);
-	}
-	if (fd_out == -1) {
-		fatal("Failed to create %s: %s\n", control->outfile, strerror(errno));
+		if (control->flags & FLAG_FORCE_REPLACE) {
+			fd_out = open(control->outfile,O_WRONLY|O_CREAT|O_TRUNC,0666);
+		} else {
+			fd_out = open(control->outfile,O_WRONLY|O_CREAT|O_EXCL,0666);
+		}
+		if (fd_out == -1) {
+			fatal("Failed to create %s: %s\n", control->outfile, strerror(errno));
+		}
 	}
 
-	preserve_perms(control, fd_in, fd_out);
+	if(!control->in_tmp && !control->out_tmp)
+		preserve_perms(control, fd_in, fd_out);
 
-	write_magic(fd_in, fd_out);
-	rzip_fd(control, fd_in, fd_out);
+	if(!control->in_tmp) {
+		write_magic(fd_in, fd_out);
+	} else {
+		write_magic(0, fd_out);
+	}
+
+	l = rzip_fd(control, fd_in, fd_out);
+
+	if(control->in_tmp && !control->out_tmp) {
+		update_magic(l, fd_out);
+	}
 
 	if (close(fd_in) != 0 ||
 	    close(fd_out) != 0) {
 		fatal("Failed to close files\n");
 	}
 
-	if ((control->flags & FLAG_KEEP_FILES) == 0) {
+	if(control->out_tmp)
+		unlink (control->out_tmp);
+
+	if(control->in_tmp) {
+		unlink (control->in_tmp);
+	} else if ((control->flags & FLAG_KEEP_FILES) == 0) {
 		if (unlink(control->infile) != 0) {
 			fatal("Failed to unlink %s: %s\n", control->infile, strerror(errno));
 		}
 	}
+
 
 	free(control->outfile);
 }
@@ -267,7 +371,7 @@ static void compress_file(struct rzip_control *control)
 		control.flags |= FLAG_DECOMPRESS;
 	}
 
-	while ((c = getopt(argc, argv, "h0123456789dS:tVvkfPo:L:")) != -1) {
+	while ((c = getopt(argc, argv, "h0123456789dS:tVvkfPo:L:q:Q:")) != -1) {
 		if (isdigit(c)) {
 			control.compression_level = c - '0';
 			continue;
@@ -284,6 +388,13 @@ static void compress_file(struct rzip_control *control)
 			break;
 		case 'o':
 			control.outname = optarg;
+			break;
+		case 'q':
+			control.in_tmp = optarg;
+			break;
+		case 'Q':
+			control.out_tmp = optarg;
+			control.flags |= FLAG_KEEP_FILES;
 			break;
 		case 't':
 			fatal("integrity checking currently not implemented\n");
@@ -321,13 +432,35 @@ static void compress_file(struct rzip_control *control)
 		fatal("Cannot specify output filename with more than 1 file\n");
 	}
 	
+	if (!control.outname && control.in_tmp && ! control.out_tmp) {
+		fatal("Must specify output filename when reading from stdin\n");
+	}
+	
+	if (control.outname && control.out_tmp) {
+		fatal("Must not specify output filename when writing to stdout\n");
+	}
+	
+	if (control.in_tmp && argc > 0) {
+		fatal("Cannot specify -q with input files\n");
+	}
+
+	if (!(control.flags & FLAG_DECOMPRESS) && control.out_tmp && control.in_tmp) {
+		fprintf(stderr,"WARNING: file produced is not usable with plain rzip\n");
+	}
+
+	if (control.in_tmp)
+		argc=1;
+
 	if (argc < 1) {
 		usage();
 		exit(1);
 	}
 
 	for (i=0;i<argc;i++) {
-		control.infile = argv[i];
+		if (control.in_tmp)
+			control.infile = "-";
+		else
+			control.infile = argv[i];
 
 		if (control.flags & (FLAG_DECOMPRESS | FLAG_TEST_ONLY)) {
 			decompress_file(&control);

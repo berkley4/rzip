@@ -39,10 +39,12 @@ struct stream_info {
 	struct stream *s;
 	int num_streams;
 	int fd;
+	int piped;
 	u32 bufsize;
 	u32 cur_pos;
 	off_t initial_pos;
 	u32 total_read;
+	off_t piped_in;
 };
 
 /*
@@ -104,6 +106,74 @@ static int decompress_buf(struct stream *s, u32 c_len, int c_type)
 
 	free(c_buf);
 	return 0;
+}
+
+#define GD_LEN 1
+#define GD_OFF 2
+#define GD_REL 3
+#define GD_LEN_EOF 4
+static int get_data(struct stream_info *ss, int len, off_t offset, int what)
+{
+	off_t currpos, endpos;
+	size_t toread;
+	ssize_t r,w;
+	static char buf[64*1024];
+	int eof_ok=0;
+
+	if(!ss->piped)
+		return 1;
+
+	currpos=lseek(ss->fd,0,SEEK_CUR);
+	if(currpos==-1)
+		fatal("cannot seek in temporary file\n");
+
+	switch(what) {
+		case GD_LEN_EOF:
+			eof_ok=1;
+			/* FALLTHROUGH */
+		case GD_LEN:
+			toread=len;
+			break;
+		case GD_OFF:
+			endpos=offset+len;
+			toread=(endpos>ss->piped_in)?endpos-ss->piped_in:0;
+			break;
+		case GD_REL:
+			endpos=currpos+len;
+			toread=(endpos>ss->piped_in)?endpos-ss->piped_in:0;
+			break;
+		default:
+			fatal("internal error\n");
+		
+	}
+
+	if(toread==0)
+		return;
+	
+	if(lseek(ss->fd,0,SEEK_END)==-1)
+		fatal("cannot seek in temporary file\n");
+
+	ss->piped_in+=toread;
+
+	while(toread>0 && (r=read(STDIN_FILENO,buf,MIN(sizeof(buf),toread)))>0) {
+		toread-=r;
+		w=write(ss->fd,buf,r);
+		if(w<0) 
+			fatal("cannot write to temporary file: %s\n",strerror(errno));
+		if(w!=r) 
+			fatal("partial write?!\n");
+	}
+	if(r==0) {
+		if(eof_ok && len==toread)
+			return 0;
+		fatal("premature EOF\n");
+	}
+	if(r<0) {
+		fatal("cannot read from stdin: %s\n",strerror(errno));
+	}
+	if(lseek(ss->fd,currpos,SEEK_SET)==-1)
+		fatal("failed to seek");
+	return 1;
 }
 
 /* write to a file, return 0 on success and -1 on failure */
@@ -206,7 +276,7 @@ static int seekto(struct stream_info *sinfo, u32 pos)
 
 /* open a set of output streams, compressing with the given
    bzip level */
-void *open_stream_out(int f, int n, int bzip_level)
+void *open_stream_out(int f, int n, int bzip_level, int piped)
 {
 	int i;
 	struct stream_info *sinfo;
@@ -219,6 +289,7 @@ void *open_stream_out(int f, int n, int bzip_level)
 	sinfo->num_streams = n;
 	sinfo->cur_pos = 0;
 	sinfo->fd = f;
+	sinfo->piped = piped;
 	if (bzip_level == 0) {
 		sinfo->bufsize = 100*1024;
 	} else {
@@ -258,10 +329,12 @@ failed:
 }
 
 /* prepare a set of n streams for reading on file descriptor f */
-void *open_stream_in(int f, int n)
+void *open_stream_in(int f, int n, int piped, int *eof)
 {
 	int i;
 	struct stream_info *sinfo;
+
+	*eof=0;
 
 	sinfo = calloc(sizeof(*sinfo), 1);
 	if (!sinfo) {
@@ -270,11 +343,19 @@ void *open_stream_in(int f, int n)
 
 	sinfo->num_streams = n;
 	sinfo->fd = f;
+	sinfo->piped = piped;
+	sinfo->piped_in = 0;
 	sinfo->initial_pos = lseek(f, 0, SEEK_CUR);
 
 	sinfo->s = (struct stream *)calloc(sizeof(sinfo->s[0]), n);
 	if (!sinfo->s) {
 		free(sinfo);
+		return NULL;
+	}
+
+	if(get_data(sinfo,n*13,0,GD_LEN_EOF)==0) {
+		free(sinfo);
+		*eof=1;
 		return NULL;
 	}
 
@@ -300,6 +381,7 @@ void *open_stream_in(int f, int n)
 		    i == 0) {
 			err_msg("Enabling stream close workaround\n");
 			sinfo->initial_pos += 13;
+			get_data(sinfo,13,0,GD_LEN);
 			goto again;
 		}
 
@@ -377,6 +459,8 @@ static int fill_buffer(struct stream_info *sinfo, int stream)
 	uchar c_type;
 	u32 u_len, c_len;
 
+	get_data(sinfo, 13, sinfo->s[stream].last_head, GD_OFF);
+
 	if (seekto(sinfo, sinfo->s[stream].last_head) != 0) {
 		return -1;
 	}
@@ -396,6 +480,7 @@ static int fill_buffer(struct stream_info *sinfo, int stream)
 
 	sinfo->total_read += 13;
 
+	get_data(sinfo, c_len, 0, GD_REL);
 	if (sinfo->s[stream].buf) {
 		free(sinfo->s[stream].buf);
 	}
@@ -474,6 +559,8 @@ int read_stream(void *ss, int stream, uchar *p, int len)
 /* flush and close down a stream. return -1 on failure */
 int close_stream_out(void *ss)
 {
+	ssize_t r,w,l;
+	static char buf[64*1024];
 	struct stream_info *sinfo = ss;
 	int i;
 	for (i=0;i<sinfo->num_streams;i++) {
@@ -483,6 +570,30 @@ int close_stream_out(void *ss)
 		}
 		if (sinfo->s[i].buf) free(sinfo->s[i].buf);
 	}
+
+	if(sinfo->piped) {
+		if(lseek(sinfo->fd,0,SEEK_SET)==-1)
+			fatal("cannot seek in temporary file\n");
+
+		while((r=read(sinfo->fd,buf,sizeof(buf)))>0) {
+			w=l=0;
+			while(r>0 && (w=write(STDOUT_FILENO,buf+l,r))>0) {
+				l+=w;
+				r-=w;
+			}
+			if(w<0) {
+				fatal("cannot write to stdout: %s\n",strerror(errno));
+			}
+		}
+		if(r<0) {
+			fatal("cannot read from temporary file: %s\n",strerror(errno));
+		}
+
+		if(lseek(sinfo->fd,0,SEEK_SET)==-1 ||
+		   ftruncate(sinfo->fd,0)==-1)
+			fatal("cannot truncate temporary file\n");
+	}
+
 	free(sinfo->s);
 	free(sinfo);
 	return 0;
@@ -502,6 +613,11 @@ int close_stream_in(void *ss)
 		if (sinfo->s[i].buf) free(sinfo->s[i].buf);
 	}
 
+	if(sinfo->piped) {
+		if(lseek(sinfo->fd,0,SEEK_SET)==-1 ||
+		   ftruncate(sinfo->fd,0)==-1)
+			fatal("cannot truncate temporary file\n");
+	}
 	free(sinfo->s);
 	free(sinfo);
 	return 0;

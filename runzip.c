@@ -63,9 +63,10 @@ static int read_header(void *ss, uchar *head)
 }
 
 
-static int unzip_literal(void *ss, int len, int fd_out, uint32 *cksum)
+static int unzip_literal(void *ss, int len, int fd_out, uint32 *cksum, int out_is_pipe)
 {
 	uchar *buf;
+	ssize_t w,r;
 
 	buf = malloc(len);
 	if (!buf) {
@@ -76,6 +77,13 @@ static int unzip_literal(void *ss, int len, int fd_out, uint32 *cksum)
 	if (write(fd_out, buf, len) != len) {
 		fatal("Failed to write literal buffer of size %d\n", len);
 	}
+	if (out_is_pipe) {
+		w=0;
+		while(w<len && (r=write(STDOUT_FILENO, buf+w, len-w))>0)
+			w+=r;
+		if(r<0)
+			fatal("Failed to write literal buffer of size %d\n", len);
+	}
 
 	*cksum = crc32_buffer(buf, len, *cksum);
 
@@ -83,12 +91,13 @@ static int unzip_literal(void *ss, int len, int fd_out, uint32 *cksum)
 	return len;
 }
 
-static int unzip_match(void *ss, int len, int fd_out, int fd_hist, uint32 *cksum)
+static int unzip_match(void *ss, int len, int fd_out, int fd_hist, uint32 *cksum, int out_is_pipe)
 {
 	unsigned offset;
 	int n, total=0;
 	off_t cur_pos = lseek(fd_out, 0, SEEK_CUR);
 	offset = read_u32(ss, 0);
+	ssize_t w,r;
 
 	if (lseek(fd_hist, cur_pos-offset, SEEK_SET) == (off_t)-1) {
 		fatal("Seek failed by %d from %d on history file in unzip_match - %s\n", 
@@ -112,6 +121,13 @@ static int unzip_match(void *ss, int len, int fd_out, int fd_hist, uint32 *cksum
 			fatal("Failed to write %d bytes in unzip_match\n", n);
 		}
 
+		if (out_is_pipe) {
+			w=0;
+			while(w<n && (r=write(STDOUT_FILENO, buf+w, n-w))>0)
+				w+=r;
+			if(r<0)
+				fatal("Failed to write literal buffer of size %d\n", len);
+		}
 		*cksum = crc32_buffer(buf, n, *cksum);
 
 		len -= n;
@@ -126,7 +142,7 @@ static int unzip_match(void *ss, int len, int fd_out, int fd_hist, uint32 *cksum
 /* decompress a section of an open file. Call fatal() on error
    return the number of bytes that have been retrieved
  */
-static int runzip_chunk(int fd_in, int fd_out, int fd_hist)
+static int runzip_chunk(int fd_in, int fd_out, int fd_hist, int out_is_pipe, int in_is_pipe)
 {
 	uchar head;
 	int len;
@@ -135,29 +151,34 @@ static int runzip_chunk(int fd_in, int fd_out, int fd_hist)
 	off_t ofs;
 	int total = 0;
 	uint32 good_cksum, cksum = 0;
+	int eof;
 	
-	ofs = lseek(fd_in, 0, SEEK_CUR);
-	if (ofs == (off_t)-1) {
-		fatal("Failed to seek input file in runzip_fd\n");
+	if(!in_is_pipe) {
+		ofs = lseek(fd_in, 0, SEEK_CUR);
+		if (ofs == (off_t)-1) {
+			fatal("Failed to seek input file in runzip_fd\n");
+		}
+
+		if (fstat(fd_in, &st) != 0 || st.st_size-ofs == 0) {
+			return 0;
+		}
 	}
 
-	if (fstat(fd_in, &st) != 0 || st.st_size-ofs == 0) {
-		return 0;
-	}
-
-	ss = open_stream_in(fd_in, NUM_STREAMS);
+	ss = open_stream_in(fd_in, NUM_STREAMS, in_is_pipe, &eof);
 	if (!ss) {
+		if(eof)
+			return 0;
 		fatal(NULL);
 	}
 
 	while ((len = read_header(ss, &head)) || head) {
 		switch (head) {
 		case 0:
-			total += unzip_literal(ss, len, fd_out, &cksum);
+			total += unzip_literal(ss, len, fd_out, &cksum, out_is_pipe);
 			break;
 
 		default:
-			total += unzip_match(ss, len, fd_out, fd_hist, &cksum);
+			total += unzip_match(ss, len, fd_out, fd_hist, &cksum, out_is_pipe);
 			break;
 		}
 	}
@@ -171,17 +192,27 @@ static int runzip_chunk(int fd_in, int fd_out, int fd_hist)
 		fatal("Failed to close stream!\n");
 	}
 
+	if(out_is_pipe) {
+		if(lseek(fd_out,0,SEEK_SET)==-1 ||
+		   lseek(fd_hist,0,SEEK_SET)==-1 ||
+		   ftruncate(fd_out,0)==-1)
+			fatal("cannot truncate temporary file\n");
+	}
+
 	return total;
 }
 
 /* decompress a open file. Call fatal() on error
    return the number of bytes that have been retrieved
  */
-off_t runzip_fd(int fd_in, int fd_out, int fd_hist, off_t expected_size)
+off_t runzip_fd(int fd_in, int fd_out, int fd_hist, off_t expected_size, int out_is_pipe, int in_is_pipe)
 {
-	off_t total = 0;
-	while (total < expected_size) {
-		total += runzip_chunk(fd_in, fd_out, fd_hist);
+	off_t total = 0, l;
+	while (total < expected_size || expected_size==0) {
+		l = runzip_chunk(fd_in, fd_out, fd_hist, out_is_pipe, in_is_pipe);
+		total += l;
+		if( l == 0)
+			break;
 	}
 	return total;
 }

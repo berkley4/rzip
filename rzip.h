@@ -108,6 +108,7 @@ extern int errno;
 
 struct rzip_control {
 	const char *infile, *outname;
+	const char *in_tmp, *out_tmp;
 	char *outfile;
 	const char *suffix;
 	unsigned compression_level;
@@ -117,10 +118,10 @@ struct rzip_control {
 
 void fatal(const char *format, ...);
 void err_msg(const char *format, ...);
-off_t runzip_fd(int fd_in, int fd_out, int fd_hist, off_t expected_size);
-void rzip_fd(struct rzip_control *control, int fd_in, int fd_out);
-void *open_stream_out(int f, int n, int bzip_level);
-void *open_stream_in(int f, int n);
+off_t runzip_fd(int fd_in, int fd_out, int fd_hist, off_t expected_size, int out_is_pipe, int in_is_pipe);
+off_t rzip_fd(struct rzip_control *control, int fd_in, int fd_out);
+void *open_stream_out(int f, int n, int bzip_level, int piped);
+void *open_stream_in(int f, int n, int piped, int *eof);
 int write_stream(void *ss, int stream, uchar *p, int len);
 int read_stream(void *ss, int stream, uchar *p, int len);
 int close_stream_out(void *ss);
