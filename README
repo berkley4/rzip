@@ -2,6 +2,8 @@ This is Andrew Tridgell's rzip compressor (original source: http://rzip.samba.or
 built with Nicolas Rachinsky's patch to enable data to be read from and/or written
 to stdin/stdout.
 
+WARNING: any rzip file produced with this version is not usable with plain rzip.
+
 Build the program with something similar to this :-
 
 export CC=gcc-4.7 \
