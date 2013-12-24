@@ -4,6 +4,8 @@ to stdin/stdout.
 
 WARNING: any rzip file produced with this version is not usable with plain rzip.
 
+
+To compile you need to install libbz2-dev (or the equivalent for your system).
 Build the program with something similar to this :-
 
 export CC=gcc-4.7 \
