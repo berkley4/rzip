@@ -9,16 +9,16 @@ WARNING: any rzip file produced with this version is not usable with plain rzip.
 To compile you need to install libbz2-dev (or the equivalent for your system).
 Build the program with something similar to this :-
 
-export CC=gcc-4.7 CFLAGS="-D_FORTIFY_SOURCE=2 -fstack-protector \
---param=ssp-buffer-size=4 -fpie -O2 -march=i686" LDFLAGS="-Wl,-O1 \
--Wl,--sort-common -pie -Wl,-z,relro -Wl,-z,now"
+export CC=gcc-4.7 CPPFLAGS="-D_FORTIFY_SOURCE=2" \
+CFLAGS="-fstack-protector --param=ssp-buffer-size=4 -fpie -O2 -march=i686" \
+LDFLAGS="-Wl,-O1 -Wl,--sort-common -pie -Wl,-z,relro -Wl,-z,now"
 
 
 Or for an amd64 system (fPIE instead of fpie) :-
 
-export CC=gcc-4.7 CFLAGS="-D_FORTIFY_SOURCE=2 -fstack-protector \
---param=ssp-buffer-size=4 -fPIE -O2 -march=athlon64" LDFLAGS="-Wl,-O1 \
--Wl,--sort-common -pie -Wl,-z,relro -Wl,-z,now"
+export CC=gcc-4.7 CPPFLAGS="-D_FORTIFY_SOURCE=2" \
+CFLAGS="-fstack-protector --param=ssp-buffer-size=4 -fPIE -O2 -march=athlon64" \
+LDFLAGS="-Wl,-O1 -Wl,--sort-common -pie -Wl,-z,relro -Wl,-z,now"
 
 
 ./configure

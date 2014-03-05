@@ -8,6 +8,7 @@ INSTALL_MAN=$(prefix)/man
 
 LIBS=@LIBS@
 CC=@CC@
+CPPFLAGS=@CPPFLAGS@
 CFLAGS=@CFLAGS@
 LDFLAGS=@LDFLAGS@
 
@@ -25,7 +26,7 @@ OBJS= rzip.o runzip.o main.o stream.o util.o crc32.o
 
 # note that the -I. is needed to handle config.h when using VPATH
 .c.o:
-	$(CC) -I. -I$(srcdir) $(CFLAGS) -c $< -o $@
+	$(CC) -I. -I$(srcdir) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 all: rzip
 
@@ -38,7 +39,7 @@ install: all
 	${INSTALLCMD} -m 644 $(srcdir)/rzip.1 ${INSTALL_MAN}/man1/
 
 rzip: $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o rzip $(OBJS) $(LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o rzip $(OBJS) $(LIBS)
 
 rzip.1: rzip.yo
 	yodl2man -o rzip.1 rzip.yo
