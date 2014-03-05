@@ -1,6 +1,7 @@
-This is Andrew Tridgell's rzip compressor (original source: http://rzip.samba.org/)
-built with Nicolas Rachinsky's patch to enable data to be read from and/or written
-to stdin/stdout.
+This is Andrew Tridgell's rzip compressor
+(original source: http://rzip.samba.org/)
+Built with Nicolas Rachinsky's patch to enable data to be read from and/or
+written to stdin/stdout.
 
 WARNING: any rzip file produced with this version is not usable with plain rzip.
 
@@ -8,9 +9,9 @@ WARNING: any rzip file produced with this version is not usable with plain rzip.
 To compile you need to install libbz2-dev (or the equivalent for your system).
 Build the program with something similar to this :-
 
-export CC=gcc-4.7 \
-CFLAGS="-D_FORTIFY_SOURCE=2 -fstack-protector --param=ssp-buffer-size=4 -fpie -O2 -march=i686" \
-LDFLAGS="-Wl,-O1 -Wl,--sort-common -pie -Wl,-z,relro -Wl,-z,now"
+export CC=gcc-4.7 CFLAGS="-D_FORTIFY_SOURCE=2 -fstack-protector \
+--param=ssp-buffer-size=4 -fpie -O2 -march=i686" LDFLAGS="-Wl,-O1 \
+-Wl,--sort-common -pie -Wl,-z,relro -Wl,-z,now"
 
 ./configure
 
@@ -22,10 +23,13 @@ Example usage :-
 Compress directory 'files' and encrypt the result
 
 export R1=/tmp/temp1 R2=/tmp/temp2 ; \
-tar -C "$HOME" -c files | rzip -q "$R1" -Q "$R2" | openssl aes-256-cbc -out "$HOME"/files.tar.rz
+tar -C "$HOME" -c files | rzip -q "$R1" -Q "$R2" | \
+openssl aes-256-cbc -out "$HOME"/files.tar.rz
 
 
 Decrypt files.tar.rz and decompress it
 
 export R3=/tmp/temp3 R4=/tmp/temp4 ; \
-openssl aes-256-cbc -d -in "$HOME"/incoming/files.tar.rz | rzip -d -q "$R3" -Q "$R4" | tar -C "$HOME"/incoming -x
+openssl aes-256-cbc -d -in "$HOME"/incoming/files.tar.rz | \
+rzip -d -q "$R3" -Q "$R4" | \
+tar -C "$HOME"/incoming -x
